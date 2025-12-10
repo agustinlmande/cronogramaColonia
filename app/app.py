@@ -19,7 +19,12 @@ CAPACIDAD_PILETAS = {
 }
 
 GRUPOS_CON_PROFE_COMPARTIDO = ["CELESTE", "AMARILLO"] 
+
+# Actividades tranquilas permitidas pegadas a la pileta
 ACTIVIDADES_PERMITIDAS_BUFFER = ["MERIENDA", "PLAZA"]
+
+# MERIENDA es la unica que permite multiples grupos a la vez
+ACTIVIDADES_SIN_PROFE_EXCLUSIVO = ["MERIENDA"]
 
 # --- 2. FUNCIONES DE LÓGICA ---
 
@@ -87,17 +92,16 @@ def es_compatible_con_natacion(actividad):
 def verificar_y_asignar(schedule, ocupacion_grupo, conteo_piletas, ocupacion_recurso, registro_actividades_diarias,
                         dia_idx, dia_nom, hora, grupo, actividad, lugar_nombre, es_pileta=False, capacidad_pileta=0):
     
-    # 1. REGLA NUEVA: UNICIDAD DE ACTIVIDAD POR DÍA
-    # Si el grupo ya hizo "MERIENDA" este "LUNES", no puede volver a hacerla.
+    # 1. UNICIDAD
     actividades_hoy = registro_actividades_diarias.get((dia_nom, grupo), set())
     if actividad in actividades_hoy:
         return False
 
-    # 2. El grupo está libre a esa hora?
+    # 2. DISPONIBILIDAD GRUPO
     if (dia_nom, hora, grupo) in ocupacion_grupo:
         return False
     
-    # 3. Chequeo de lugar
+    # 3. DISPONIBILIDAD RECURSO
     if es_pileta:
         key_pileta = (dia_nom, hora, lugar_nombre)
         ocupantes_actuales = conteo_piletas.get(key_pileta, 0)
@@ -105,19 +109,18 @@ def verificar_y_asignar(schedule, ocupacion_grupo, conteo_piletas, ocupacion_rec
             return False
         conteo_piletas[key_pileta] = ocupantes_actuales + 1
     else:
-        if lugar_nombre != "CANCHA": 
-            if (dia_nom, hora, lugar_nombre) in ocupacion_recurso:
+        if actividad not in ACTIVIDADES_SIN_PROFE_EXCLUSIVO:
+            if (dia_nom, hora, actividad) in ocupacion_recurso:
                 return False
-            ocupacion_recurso.add((dia_nom, hora, lugar_nombre))
+            ocupacion_recurso.add((dia_nom, hora, actividad))
 
-    # 4. Asignar
+    # 4. ASIGNAR
     schedule.append({
         "DIA_ID": dia_idx, "DIA": dia_nom, "HORA": hora,
         "GRUPO": grupo, "ACTIVIDAD": actividad, "LUGAR": lugar_nombre
     })
     ocupacion_grupo.add((dia_nom, hora, grupo))
     
-    # Registrar que ya hizo esta actividad hoy
     if (dia_nom, grupo) not in registro_actividades_diarias:
         registro_actividades_diarias[(dia_nom, grupo)] = set()
     registro_actividades_diarias[(dia_nom, grupo)].add(actividad)
@@ -131,11 +134,7 @@ def generar_cronograma_logica(df_input):
     ocupacion_grupo = set()
     conteo_piletas = {}
     ocupacion_recurso = set()
-    
-    # NUEVO: Registro para evitar duplicados el mismo día
-    # Clave: (dia, grupo) -> Valor: Set de actividades {"FUTBOL", "NATACION"}
     registro_actividades_diarias = {}
-
     mapa_natacion_indices = {} 
 
     # --- FASE 1: NATACIÓN ---
@@ -167,18 +166,11 @@ def generar_cronograma_logica(df_input):
             
             if es_viable_toda_semana:
                 idx_hora_elegida = HORARIOS_ACTIVOS.index(hora)
-                
                 for d_idx, dia_nom in enumerate(DIAS_SEMANA):
-                    # Usamos la nueva función verificar (aunque aquí forzamos un poco porque ya validamos antes)
-                    # pero sirve para registrar la actividad en el sistema diario
                     verificar_y_asignar(schedule, ocupacion_grupo, conteo_piletas, ocupacion_recurso, registro_actividades_diarias,
-                                        d_idx, dia_nom, hora, grupo, "NATACION", lugar, True, 99) # Capacidad 99 porque ya validamos manual
-                    
-                    if necesita_profe:
-                        ocupacion_recurso.add((dia_nom, hora, "PROFE_NATACION_MENORES"))
-                    
+                                        d_idx, dia_nom, hora, grupo, "NATACION", lugar, True, 99)
+                    if necesita_profe: ocupacion_recurso.add((dia_nom, hora, "PROFE_NATACION_MENORES"))
                     mapa_natacion_indices[(dia_nom, grupo)] = idx_hora_elegida
-
                 asignado_fijo = True
                 break
         
@@ -187,7 +179,7 @@ def generar_cronograma_logica(df_input):
 
     # --- FASE 2: OTROS DEPORTES ---
     df_otros = df[~df['ACTIVIDAD'].str.contains("NATAC")].copy()
-    df_otros['PRIORIDAD'] = df_otros['ACTIVIDAD'].apply(lambda x: 2 if any(k in x for k in ["TENIS","RIO","CANOTAJE","HOCKEY"]) else 1)
+    df_otros['PRIORIDAD'] = df_otros['ACTIVIDAD'].apply(lambda x: 2 if any(k in x for k in ["TENIS","RIO","CANOTAJE","HOCKEY","PLAZA"]) else 1)
     df_otros = df_otros.sort_values(by='PRIORIDAD', ascending=False)
     
     for _, row in df_otros.iterrows():
@@ -198,10 +190,10 @@ def generar_cronograma_logica(df_input):
         except: frec = 1
         
         lugar = "CANCHA"
-        es_unico = False
-        if "TENIS" in actividad: lugar = "TENIS"; es_unico = True
-        elif "CANOTAJE" in actividad: lugar = "RIO"; es_unico = True
-        elif "HOCKEY" in actividad: lugar = "CANCHA HOCKEY"; es_unico = True
+        if "TENIS" in actividad: lugar = "TENIS"
+        elif "CANOTAJE" in actividad: lugar = "RIO"
+        elif "HOCKEY" in actividad: lugar = "CANCHA HOCKEY"
+        elif "PLAZA" in actividad: lugar = "PLAZA"
         
         es_merienda_o_plaza = es_compatible_con_natacion(actividad)
 
@@ -220,31 +212,21 @@ def generar_cronograma_logica(df_input):
             asignado_ahora = False
             for dia_idx in dias_ord:
                 dia_nom = DIAS_SEMANA[dia_idx]
-                
-                # REGLA NUEVA: Si ya hizo esta actividad HOY, saltamos al siguiente día
-                actividades_hoy = registro_actividades_diarias.get((dia_nom, grupo), set())
-                if actividad in actividades_hoy:
-                    continue 
+                if actividad in registro_actividades_diarias.get((dia_nom, grupo), set()): continue 
 
                 hs = list(HORARIOS_ACTIVOS)
                 random.shuffle(hs)
-                
                 idx_natacion = mapa_natacion_indices.get((dia_nom, grupo))
                 
                 for hora in hs:
                     idx_actual = HORARIOS_ACTIVOS.index(hora)
                     
                     if not es_merienda_o_plaza and idx_natacion is not None:
-                        if abs(idx_actual - idx_natacion) == 1:
-                            continue 
+                        if abs(idx_actual - idx_natacion) == 1: continue 
 
-                    # Intentar asignar usando la función que chequea duplicados
                     if verificar_y_asignar(schedule, ocupacion_grupo, conteo_piletas, ocupacion_recurso, registro_actividades_diarias,
                                            dia_idx, dia_nom, hora, grupo, actividad, lugar, False, 0):
-                        asignados += 1
-                        asignado_ahora = True
-                        break
-                
+                        asignados += 1; asignado_ahora = True; break
                 if asignado_ahora: break
 
     # --- FASE 3: RELLENO ---
@@ -257,14 +239,44 @@ def generar_cronograma_logica(df_input):
 
     return pd.DataFrame(schedule)
 
+# --- 3. MODAL DE PAUTAS ---
+@st.dialog("📋 Pautas de Generación")
+def mostrar_pautas():
+    st.markdown("""
+    Estas son las reglas matemáticas que el sistema respeta para crear el cronograma:
+    
+    1.  **NATACIÓN FIJA:** El horario de pileta asignado se mantiene igual de Lunes a Viernes.
+    2.  **CAPACIDAD PILETAS:**
+        * **Chica:** 1 grupo máx.
+        * **Mediana/Grande:** 3 grupos máx.
+    3.  **PROFE COMPARTIDO:** Los grupos **Celestes y Amarillos** nunca se superponen en natación (comparten profe). Los Naranjas son independientes.
+    4.  **UNICIDAD:** Un grupo no repite la misma actividad el mismo día (Ej: No puede tener 2 veces Fútbol el Martes).
+    5.  **ZONA DE DESCANSO:** No se asignan deportes intensos inmediatamente antes o después de la pileta.
+        * *Excepción:* **Merienda y Plaza** sí pueden ir pegados a la pileta.
+    6.  **PROFESORES DE CAMPO:** Cada deporte (Fútbol, Básquet, etc.) tiene 1 solo profe. Si un grupo lo usa, el horario se bloquea para el resto.
+        * *Excepción:* **Merienda** es la única actividad que pueden realizar varios grupos a la vez.
+    7.  **PLAZA:** Se considera un recurso exclusivo (solo 1 grupo a la vez).
+    8.  **HORARIOS:** * 08:30 y 12:00: Siempre Libre.
+        * 09:00 a 11:30: Actividades.
+    """)
+
 # --- INTERFAZ ---
 st.title("Master Plan Colonia ☀️")
+
+# CSS para el botón amarillo
 st.markdown("""
-**Reglas Activas:**
-* **Unicidad:** No se repite la misma actividad el mismo día.
-* **Buffer:** Deportes prohibidos pegados a Natación.
-* **Natación:** Fija + Profe compartido.
-""")
+<style>
+    div[data-testid="column"] button[kind="secondary"] {
+        border-color: #FFC107 !important;
+        color: #FFC107 !important;
+    }
+    div[data-testid="column"] button[kind="secondary"]:hover {
+        border-color: #FFD54F !important;
+        color: #FFD54F !important;
+        background-color: #FFF8E1 !important;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 archivo = st.file_uploader("Cargar Excel Nuevo", type=['xlsx', 'csv'])
 
@@ -278,55 +290,110 @@ if archivo:
         if archivo.name.endswith('.csv'): df_in = pd.read_csv(archivo)
         else: df_in = pd.read_excel(archivo)
         
-        if st.button("GENERAR CRONOGRAMA", type="primary"):
-            with st.spinner("Verificando duplicados y armando horarios..."):
-                df_res = generar_cronograma_logica(df_in)
-            
-            if not df_res.empty:
+        # --- BOTONES EN COLUMNAS ---
+        col_gen, col_pautas, col_void = st.columns([2, 1, 3])
+        
+        with col_gen:
+            btn_generar = st.button("GENERAR CRONOGRAMA", type="primary", use_container_width=True)
+        with col_pautas:
+            if st.button("📋 Ver Pautas", type="secondary", use_container_width=True):
+                mostrar_pautas()
+        
+        if btn_generar:
+            with st.spinner("Procesando todas las reglas..."):
+                st.session_state['df_res'] = generar_cronograma_logica(df_in)
+                st.session_state['mapa_colores'] = mapa_colores
                 st.success("¡Cronograma Completado!")
+
+        if 'df_res' in st.session_state:
+            df_res = st.session_state['df_res']
+            colores = st.session_state['mapa_colores']
+            st.divider()
+            
+            # 1. VISTA GRUPOS
+            st.subheader("📁 Vista por Grupos")
+            grupos = sorted(df_res['GRUPO'].unique())
+            g_sel = st.selectbox("Seleccionar Grupo:", grupos)
+            df_g = df_res[df_res['GRUPO'] == g_sel]
+            pivot_g = df_g.pivot(index='HORA', columns='DIA', values='ACTIVIDAD')
+            pivot_g = pivot_g.reindex(HORARIOS_VISTA).reindex(columns=DIAS_SEMANA)
+            st.table(pivot_g)
+            
+            buffer_grupos = io.BytesIO()
+            with pd.ExcelWriter(buffer_grupos, engine='xlsxwriter') as writer:
+                workbook = writer.book
+                fmt_libre = workbook.add_format({'align': 'center', 'valign': 'vcenter', 'border': 1})
+                fmt_actividad = workbook.add_format({'align': 'center', 'valign': 'vcenter', 'border': 1, 'bold': True})
                 
-                grupos = sorted(df_res['GRUPO'].unique())
-                g_sel = st.selectbox("Vista previa:", grupos)
-                df_g = df_res[df_res['GRUPO'] == g_sel]
-                pivot = df_g.pivot(index='HORA', columns='DIA', values='ACTIVIDAD')
-                pivot = pivot.reindex(HORARIOS_VISTA)
-                pivot = pivot.reindex(columns=DIAS_SEMANA)
-                st.table(pivot)
+                df_res.sort_values(by=['GRUPO', 'DIA_ID', 'HORA'])[['GRUPO', 'DIA', 'HORA', 'ACTIVIDAD', 'LUGAR']].to_excel(writer, index=False, sheet_name='RESUMEN')
                 
-                buffer = io.BytesIO()
-                with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                    df_ordenado = df_res.sort_values(by=['GRUPO', 'DIA_ID', 'HORA'])
-                    df_ordenado[['GRUPO', 'DIA', 'HORA', 'ACTIVIDAD', 'LUGAR']].to_excel(writer, index=False, sheet_name='RESUMEN')
-                    
+                for grupo in grupos:
+                    df_fil = df_res[df_res['GRUPO'] == grupo]
+                    mat = df_fil.pivot(index='HORA', columns='DIA', values='ACTIVIDAD')
+                    mat = mat.reindex(index=HORARIOS_VISTA, columns=DIAS_SEMANA)
+                    sn = str(grupo)[:30].replace(":", "").replace("/", "")
+                    mat.to_excel(writer, sheet_name=sn)
+                    ws = writer.sheets[sn]
+                    ws.set_column(0, 0, 15); ws.set_column(1, 5, 20)
+                    for r in range(mat.shape[0]):
+                        for c in range(mat.shape[1]):
+                            val = mat.iloc[r, c]
+                            if val == "LIBRE" or pd.isna(val) or val == "-":
+                                ws.write(r+1, c+1, val, fmt_libre)
+                            else:
+                                ws.write(r+1, c+1, val, fmt_actividad)
+            st.download_button("📥 Descargar Plan Grupos (.xlsx)", buffer_grupos.getvalue(), "Cronograma_Grupos.xlsx", "application/vnd.ms-excel")
+
+            st.divider()
+
+            # 2. VISTA PROFESORES
+            st.subheader("🎓 Vista por Profesores / Deportes")
+            st.info("Solo deportes (Sin Merienda, Plaza ni Natación)")
+            
+            NO_MOSTRAR = ["LIBRE", "-", "MERIENDA", "PLAZA", "NATACION"]
+            actividades = sorted([a for a in df_res['ACTIVIDAD'].unique() if a not in NO_MOSTRAR])
+            
+            if actividades:
+                act_sel = st.selectbox("Seleccionar Deporte:", actividades)
+                df_p = df_res[df_res['ACTIVIDAD'] == act_sel]
+                pivot_p = df_p.pivot_table(index='HORA', columns='DIA', values='GRUPO', aggfunc=lambda x: ' / '.join(x))
+                pivot_p = pivot_p.reindex(HORARIOS_VISTA).reindex(columns=DIAS_SEMANA)
+                st.table(pivot_p.fillna("-"))
+                
+                buffer_profes = io.BytesIO()
+                with pd.ExcelWriter(buffer_profes, engine='xlsxwriter') as writer:
                     workbook = writer.book
-                    fmt_libre = workbook.add_format({'align': 'center', 'valign': 'vcenter', 'border': 1})
+                    fmt_std = workbook.add_format({'align': 'center', 'valign': 'vcenter', 'border': 1})
                     
-                    for grupo in grupos:
-                        df_fil = df_res[df_res['GRUPO'] == grupo]
-                        mat = df_fil.pivot(index='HORA', columns='DIA', values='ACTIVIDAD')
-                        mat = mat.reindex(index=HORARIOS_VISTA, columns=DIAS_SEMANA)
-                        sn = str(grupo)[:30].replace(":", "").replace("/", "")
+                    for act in actividades:
+                        df_act = df_res[df_res['ACTIVIDAD'] == act]
+                        mat = df_act.pivot_table(index='HORA', columns='DIA', values='GRUPO', aggfunc=lambda x: ' / '.join(x))
+                        mat = mat.reindex(index=HORARIOS_VISTA, columns=DIAS_SEMANA).fillna("-")
+                        sn = str(act)[:30].replace(":", "").replace("/", "")
                         mat.to_excel(writer, sheet_name=sn)
-                        
-                        worksheet = writer.sheets[sn]
-                        hex_color = mapa_colores.get(grupo, '#FFFFFF')
-                        fmt_actividad = workbook.add_format({
-                            'bg_color': hex_color, 'align': 'center', 'valign': 'vcenter', 'border': 1, 'bold': True
-                        })
-                        
-                        worksheet.set_column(0, 0, 15)
-                        worksheet.set_column(1, 5, 20)
-                        
+                        ws = writer.sheets[sn]
+                        ws.set_column(0, 0, 15); ws.set_column(1, 5, 25)
                         for r in range(mat.shape[0]):
                             for c in range(mat.shape[1]):
-                                actividad = mat.iloc[r, c]
-                                if actividad == "LIBRE" or pd.isna(actividad):
-                                    worksheet.write(r + 1, c + 1, actividad, fmt_libre)
-                                else:
-                                    worksheet.write(r + 1, c + 1, actividad, fmt_actividad)
-
-                st.download_button("📥 Descargar Master Plan", buffer.getvalue(), "MasterPlan_Colonia.xlsx", "application/vnd.ms-excel")
+                                ws.write(r+1, c+1, mat.iloc[r, c], fmt_std)
+                st.download_button("📥 Descargar Plan Profesores (.xlsx)", buffer_profes.getvalue(), "Horarios_Profesores.xlsx", "application/vnd.ms-excel")
             else:
-                st.error("Error al generar.")
+                st.warning("No hay deportes de campo asignados.")
+            
+            # --- ZONA DE FINALIZACIÓN ---
+            st.divider()
+            c1, c2, c3 = st.columns([1, 2, 1])
+            with c2:
+                if st.button("🔄 Reiniciar Todo", type="secondary", use_container_width=True):
+                    st.session_state.clear()
+                    st.rerun()
+
     except Exception as e:
         st.error(f"Error: {e}")
+
+# --- MARCA DE AGUA (SIEMPRE VISIBLE AL FINAL) ---
+st.markdown("""
+    <div style="text-align: right; color: #808080; font-size: 14px; margin-top: 50px; margin-bottom: 20px;">
+        Desarrollado por <b>Agustín</b> - Técnico Superior en Desarrollo de Software
+    </div>
+""", unsafe_allow_html=True)

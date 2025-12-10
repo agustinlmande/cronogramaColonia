@@ -1,11 +1,11 @@
 @echo off
-TITLE MODO DIAGNOSTICO
+TITLE MasterPlan Colonia
 COLOR 0E
 
 :: 1. Nos aseguramos de estar en la carpeta correcta
 cd /d "%~dp0"
 echo ==========================================
-echo           MODO DIAGNOSTICO
+echo           INICIO DE EJECUCION
 echo ==========================================
 echo CARPETA ACTUAL: %CD%
 echo.
